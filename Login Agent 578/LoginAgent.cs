@@ -419,7 +419,15 @@ namespace Login_Agent_578
                 //za에게 유저 정보 넘기기
                 zAgent.Send(Packet.PreparedAccount(zs_PCID, User.Key));
                 //클라에게 za정보 넘기기
-                client.Send(Packet.ZoneAgentInfo(client.PCID, zs_PCID, zAgent.IPadress, zAgent.Port, client.Ver));
+                PrintLogs(string.Format(
+                    "Sending ZoneAgent info as v562: ServerID={0}, IP={1}, Port={2}, OldPCID={3}, NewPCID={4}",
+                    ServerID,
+                    zAgent.IPadress,
+                    zAgent.Port,
+                    client.PCID,
+                    zs_PCID));
+
+                client.Send(Packet.ZoneAgentInfo(client.PCID, zs_PCID, zAgent.IPadress, zAgent.Port, ClientVer.v562));
                 //za에 유저가 정상 접속한다면 za에서 답패킷(1f,02,e3)이 날아옴
 
                 g_Config.inZoneAgent++;
