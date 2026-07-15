@@ -355,7 +355,17 @@ namespace Login_Agent_578
                                         TimeSpan ts = AccInfo.expDate - DateTime.Now;
                                         msg = string.Format(g_Config.Msg_ExpireInfo, ts.Days, ts.Hours, ts.Minutes);
                                     }
-                                    client.Send(Packet.CreateSvrList(client.PCID, client.Ver, g_Config.ZoneAgentList, g_Config.ServerList, msg));
+                                    PrintLogs(string.Format(
+                                        "Sending server list as v562: Servers={0}, ZoneAgents={1}",
+                                        g_Config.ServerList.Count,
+                                        g_Config.ZoneAgentList.Count));
+
+                                    client.Send(Packet.CreateSvrList(
+                                        client.PCID,
+                                        ClientVer.v562,
+                                        g_Config.ZoneAgentList,
+                                        g_Config.ServerList,
+                                        msg));
                                     PrintLogs(string.Format("SuccLogin: {0}:{1} {2}", client.IPadress, client.Port, str_id));
 #if DEBUG
                                     PrintLogs(string.Format("RegLoginUser: {0}", str_id));
