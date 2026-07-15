@@ -126,23 +126,71 @@ namespace Login_Agent_578
         private void RequestReceived(IAsyncResult asyncResult)
         {
             cltSession client = (cltSession)asyncResult.AsyncState;
+
             try
             {
-                if (client == null) return;
+                if (client == null)
+                    return;
+
                 int length = client.Stream.EndRead(asyncResult);
-                if (length < 10)
+
+                PrintLogs(string.Format(
+                    "Client packet received: {0} bytes",
+                    length));
+
+                if (length <= 0)
                 {
+                    PrintLogs("Disconnect: Client sent 0 bytes.");
                     client.TcpClient.Client.Disconnect(false);
                     return;
                 }
-                ExecuteCommand(client, client.Buffer);
-                client.Stream.BeginRead(client.Buffer, 0, client.Buffer.Length, new AsyncCallback(RequestReceived), client);
+
+                byte[] receivedBuffer = new byte[length];
+                Array.Copy(client.Buffer, receivedBuffer, length);
+
+                PrintLogs(
+                    "First bytes: " +
+                    BitConverter.ToString(
+                        receivedBuffer,
+                        0,
+                        Math.Min(receivedBuffer.Length, 80)
+                    )
+                );
+
+                if (length < 10)
+                {
+                    PrintLogs(string.Format(
+                        "Disconnect: Initial packet too short. Length={0}",
+                        length));
+
+                    client.TcpClient.Client.Disconnect(false);
+                    return;
+                }
+
+                ExecuteCommand(client, receivedBuffer);
+
+                client.Stream.BeginRead(
+                    client.Buffer,
+                    0,
+                    client.Buffer.Length,
+                    new AsyncCallback(RequestReceived),
+                    client
+                );
             }
-            catch (IOException) { }
-            catch (InvalidOperationException) { }
+            catch (IOException ex)
+            {
+                PrintLogs("RequestReceived IOException: " + ex.Message);
+            }
+            catch (InvalidOperationException ex)
+            {
+                PrintLogs("RequestReceived InvalidOperation: " + ex.Message);
+            }
             catch (Exception ex)
             {
-                WriteLogs(string.Format("LoginServer.RequestReceived:{0}{1}", Environment.NewLine, ex));
+                WriteLogs(string.Format(
+                    "LoginServer.RequestReceived:{0}{1}",
+                    Environment.NewLine,
+                    ex));
             }
         }
 
@@ -381,41 +429,68 @@ namespace Login_Agent_578
         /// <param name="buffer"></param>
         private bool CheckClientVersion(cltSession client, ref Byte[] buffer)
         {
+            if (buffer == null || buffer.Length < 10)
+            {
+                PrintLogs("Invalid client packet: packet is too short.");
+                return false;
+            }
+
             if (client.Ver == ClientVer.undefined)
             {
-                int length = BitConverter.ToInt32(buffer, 0);
-                if ((ClientVer.v578 == (ClientVer)length && (g_Config.WorkMode == 0 || g_Config.WorkMode == 3)) ||
-                    (ClientVer.v562 == (ClientVer)length && (g_Config.WorkMode == 0 || g_Config.WorkMode == 2)))
-                {
-                    client.Ver = (ClientVer)length;
-                    Packet.TrimPacket(ref buffer, 0);
-                }
-                else if (ClientVer.v219 == (ClientVer)BitConverter.ToInt32(buffer, 0x0A) && (g_Config.WorkMode == 0 || g_Config.WorkMode == 1))
+                int valueAt0 = buffer.Length >= 4 ? BitConverter.ToInt32(buffer, 0) : -1;
+
+                // Detect v219 (A3-style) packets: these are 0x38 (56) bytes long at offset 0
+                // and include client build/version at offset 0x34.
+                if (valueAt0 == 0x38 && (g_Config.WorkMode == 0 || g_Config.WorkMode == 1))
                 {
                     client.Ver = ClientVer.v219;
-                    Packet.TrimPacket(ref buffer, 0x0A);
-                    int cVer = BitConverter.ToInt32(buffer, 0x34);
-                    //v219에는 클라 버전 체크 기능이 있음. 버전 확인 후 아래 패킷을 보내면 클라 강제 종료됨.
-                    if (g_Config.cLowVer > cVer || g_Config.cHighVer < cVer)
+
+                    int clientBuild = buffer.Length >= 0x38 ? BitConverter.ToInt32(buffer, 0x34) : 0;
+                    PrintLogs(string.Format("Detected v219 packet layout. Client build={0}", clientBuild));
+
+                    if (g_Config.cLowVer > clientBuild || g_Config.cHighVer < clientBuild)
                     {
+                        PrintLogs(string.Format("Client build rejected. Allowed={0}-{1}, Received={2}", g_Config.cLowVer, g_Config.cHighVer, clientBuild));
                         client.Send(Packet.InvalidClientVersion(client.Ver));
                         return false;
                     }
+
+                    // For v219 we do not trim the first 10 bytes here; MsgAnalysis and ReqUserLogin expect that layout.
+                    return true;
                 }
-                else
+
+                // Handle v578 / v562 detection by checking the 32-bit value at offset 0.
+                if ((ClientVer.v578 == (ClientVer)valueAt0 && (g_Config.WorkMode == 0 || g_Config.WorkMode == 3)) ||
+                    (ClientVer.v562 == (ClientVer)valueAt0 && (g_Config.WorkMode == 0 || g_Config.WorkMode == 2)))
                 {
-                    client.TcpClient.Client.Disconnect(false);
-                    return false;
+                    client.Ver = (ClientVer)valueAt0;
+                    Packet.TrimPacket(ref buffer, 0);
+                    return true;
                 }
+
+                int valueAt10 = buffer.Length >= 14 ? BitConverter.ToInt32(buffer, 0x0A) : -1;
+                int valueAt52 = buffer.Length >= 0x38 ? BitConverter.ToInt32(buffer, 0x34) : -1;
+
+                PrintLogs(string.Format(
+                    "Unsupported client packet: BufferLength={0}, ValueAt0={1}, ValueAt10={2}, ClientVersionAt52={3}, WorkMode={4}",
+                    buffer.Length,
+                    valueAt0,
+                    valueAt10,
+                    valueAt52,
+                    g_Config.WorkMode));
+
+                client.TcpClient.Client.Disconnect(false);
+                return false;
             }
-            else if (client.Ver == ClientVer.v219)
+
+            // If already identified as v219, do not trim the leading 10 bytes.
+            if (client.Ver == ClientVer.v219)
             {
-                Packet.TrimPacket(ref buffer, 0x0A);
+                return true;
             }
-            else
-            {
-                Packet.TrimPacket(ref buffer, 0);
-            }
+
+            // For other known client versions we keep the existing trimming behavior.
+            Packet.TrimPacket(ref buffer, 0);
             return true;
         }
 

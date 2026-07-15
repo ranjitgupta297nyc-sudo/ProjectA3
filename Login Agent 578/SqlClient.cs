@@ -16,27 +16,60 @@ namespace Login_Agent_578
         internal AccountInfo getAccountInfo(string id)
         {
             AccountInfo info = new AccountInfo();
-            string query = string.Format(g_Config.QueryString[0], id);
+
+            const string query = @"
+        SELECT
+            RTRIM(c_id),
+            RTRIM(c_headera),
+            RTRIM(c_status),
+            d_udate
+        FROM dbo.account
+        WHERE RTRIM(c_id) = @id;";
 
             using (SqlConnection conn = new SqlConnection(g_Config.SqlConn))
             using (SqlCommand cmd = new SqlCommand(query, conn))
             {
+                cmd.Parameters.Add("@id", System.Data.SqlDbType.VarChar, 20)
+                      .Value = id.Trim();
+
                 try
                 {
                     conn.Open();
+
                     using (SqlDataReader rdr = cmd.ExecuteReader())
                     {
                         if (rdr.Read())
                         {
-                            info.id = rdr[0].ToString().Trim();
-                            info.pwd = rdr[1].ToString().Trim();
-                            info.status = rdr[2].ToString().Trim();
-                            info.expDate = Convert.ToDateTime(rdr[3].ToString().Trim());
+                            info.id = rdr.IsDBNull(0)
+                                ? string.Empty
+                                : rdr.GetValue(0).ToString().Trim();
+
+                            info.pwd = rdr.IsDBNull(1)
+                                ? string.Empty
+                                : rdr.GetValue(1).ToString().Trim();
+
+                            info.status = rdr.IsDBNull(2)
+                                ? string.Empty
+                                : rdr.GetValue(2).ToString().Trim();
+
+                            // EXPIRATION=0, so a missing date should not break login.
+                            info.expDate = rdr.IsDBNull(3)
+                                ? DateTime.MaxValue
+                                : Convert.ToDateTime(rdr.GetValue(3));
                         }
                     }
                 }
-                catch { }
+                catch (Exception ex)
+                {
+                    System.Windows.Forms.MessageBox.Show(
+                        ex.ToString(),
+                        "LoginAgent SQL Error",
+                        System.Windows.Forms.MessageBoxButtons.OK,
+                        System.Windows.Forms.MessageBoxIcon.Error
+                    );
+                }
             }
+
             return info;
         }
 
