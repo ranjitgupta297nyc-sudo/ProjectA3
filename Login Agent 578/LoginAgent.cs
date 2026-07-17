@@ -277,122 +277,126 @@ namespace Login_Agent_578
             }
         }
 
+        private void SendLoginFailure(cltSession client, string message, bool countFailure)
+        {
+            // The client sends a v219-layout request,
+            // but expects outgoing responses in v562 format.
+            client.Send(Packet.SayMessage(
+                message,
+                client.PCID,
+                0,
+                ClientVer.v562));
+
+            // Keep the socket open so the player can enter ID/password again.
+            if (countFailure)
+            {
+                Task.Factory.StartNew(() =>
+                    CountFailedAttempts(client.IPadress));
+            }
+
+#if DEBUG
+            PrintLogs(string.Format(
+                "Login failure sent as v562. PCID={0}, Socket kept open.",
+                client.PCID));
+#endif
+        }
+
         /// <summary>
         /// Handling login packets.
         /// 로그인 요청 패킷 처리
+        /// Note: This method processes client login requests.
         /// </summary>
         /// <param name="client"></param>
         /// <param name="buffer"></param>
         private void ReqUserLogin(cltSession client, Byte[] buffer)
         {
-            string str_id = Packet.Bytes2String(buffer, 0x0A);
-            string str_pwd = Packet.Bytes2String(buffer, 0x1F);
+            string str_id = Packet.Bytes2String(buffer, 0x0A).Trim();
+            string str_pwd = Packet.Bytes2String(buffer, 0x1F).Trim();
 
-            //check blank
+            // Blank ID or password
             if (string.IsNullOrEmpty(str_id) || string.IsNullOrEmpty(str_pwd))
             {
-                client.Send(Packet.SayMessage(g_Config.Msg_Incorrect, client.PCID, 0, client.Ver));
-                RemoveClient(client, true, true);
-#if DEBUG
-                PrintLogs(string.Format("BlankID/PWD: RemoveClient({0})", client.PCID));
-#endif
+                PrintLogs(string.Format("Blank ID/PWD: {0}", client.PCID));
+                SendLoginFailure(client, g_Config.Msg_Incorrect, true);
+                return;
             }
-            else
+
+            AccountInfo AccInfo = Acc_DB.getAccountInfo(str_id);
+
+            // Account does not exist
+            if (string.IsNullOrEmpty(AccInfo.id))
             {
-                //get db info by account
-                AccountInfo AccInfo = Acc_DB.getAccountInfo(str_id);
-                if (string.IsNullOrEmpty(AccInfo.id))
-                {
-                    client.Send(Packet.SayMessage(g_Config.Msg_Incorrect, client.PCID, 0, client.Ver));
-                    RemoveClient(client, true, true);
-#if DEBUG
-                    PrintLogs(string.Format("Wrong ID: RemoveClient({0})", client.PCID));
-#endif
-                }
-                else
-                {
-                    //check pwd
-                    if (!Hasher.Verify(str_pwd, AccInfo.pwd, (HashType)g_Config.hashType))
-                    {
-                        client.Send(Packet.SayMessage(g_Config.Msg_Incorrect, client.PCID, 0, client.Ver));
-                        RemoveClient(client, true, true);
-#if DEBUG
-                        PrintLogs(string.Format("Wrong PWD: RemoveClient({0})", client.PCID));
-#endif
-                    }
-                    else
-                    {
-                        //check status
-                        if (g_Config.RejectDB.ContainsKey(AccInfo.status))
-                        {
-                            client.Send(Packet.SayMessage(g_Config.RejectDB[AccInfo.status], client.PCID, 3, client.Ver));
-                            RemoveClient(client, true, false);
-#if DEBUG
-                            PrintLogs(string.Format("StatusReject: RemoveClient({0})", client.PCID));
-#endif
-                        }
-                        else
-                        {
-#if DEBUG
-                            PrintLogs(string.Format("{0} ExpireDate: {1}", AccInfo.id, AccInfo.expDate));
-#endif
-                            //check expire
-                            if (g_Config.isExpiration && DateTime.Now >= AccInfo.expDate)
-                            {
-                                client.Send(Packet.SayMessage(g_Config.Msg_Expired, client.PCID, 3, client.Ver));
-                                RemoveClient(client, true, false);
-                            }
-                            else
-                            {
-                                //log-in succeed: check duplicate connections
-                                if (!g_Config.LoggedInList.ContainsKey(str_id))
-                                {
-                                    string msg = string.Empty;
-                                    //아직 서버 선택전이므로 로그인 유저 정보의 Sid = -1로 설정함
-                                    g_Config.LoggedInList.Add(str_id, new LoginUser(client.PCID, -1));
-                                    if (g_Config.isExpiration)
-                                    {
-                                        TimeSpan ts = AccInfo.expDate - DateTime.Now;
-                                        msg = string.Format(g_Config.Msg_ExpireInfo, ts.Days, ts.Hours, ts.Minutes);
-                                    }
-                                    PrintLogs(string.Format(
-                                        "Sending server list as v562: Servers={0}, ZoneAgents={1}",
-                                        g_Config.ServerList.Count,
-                                        g_Config.ZoneAgentList.Count));
-
-                                    client.Send(Packet.CreateSvrList(
-                                        client.PCID,
-                                        ClientVer.v562,
-                                        g_Config.ZoneAgentList,
-                                        g_Config.ServerList,
-                                        msg));
-                                    PrintLogs(string.Format("SuccLogin: {0}:{1} {2}", client.IPadress, client.Port, str_id));
-#if DEBUG
-                                    PrintLogs(string.Format("RegLoginUser: {0}", str_id));
-#endif
-                                }
-                                else
-                                {
-                                    //duplication act: in LA OR in ZA - uid가 ZaUID의 최소값(65535)이상이면 이미 za로 넘어간 유저
-                                    PrintLogs(string.Format("Duplicate login detected {0} {1}", g_Config.LoggedInList[str_id].PCID, str_id));
-                                    //za 유저인경우 za에게 디스커넥트 요청을 해야함: 완료시 30패킷을 되돌려받음
-                                    if (g_Config.LoggedInList[str_id].PCID > g_Config.za_Uid.MinValue)
-                                    {
-                                        zaSession zAgent = g_Config.ZoneAgentList[g_Config.LoggedInList[str_id].ServerID];
-                                        zAgent.Send(Packet.reqDisconnectAcc(g_Config.LoggedInList[str_id].PCID, str_id));
-                                        PrintLogs(string.Format("Request UserDrop {0} {1} to ZoneAgent", g_Config.LoggedInList[str_id].PCID, str_id));
-                                    }
-                                    g_Config.LoggedInList.Remove(str_id);
-                                    PrintLogs(string.Format("Previous LoggedInUser.destroy {0}", str_id));
-
-                                    client.Send(Packet.SayMessage(g_Config.Msg_Duplication, client.PCID, 2, client.Ver));
-                                    RemoveClient(client, true, false);
-                                }
-                            }
-                        }
-                    }
-                }
+                PrintLogs(string.Format("Wrong ID: {0}, PCID={1}", str_id, client.PCID));
+                SendLoginFailure(client, g_Config.Msg_Incorrect, true);
+                return;
             }
+
+            // Incorrect password
+            if (!Hasher.Verify(str_pwd, AccInfo.pwd, (HashType)g_Config.hashType))
+            {
+                PrintLogs(string.Format("Wrong password: {0}, PCID={1}", str_id, client.PCID));
+                SendLoginFailure(client, g_Config.Msg_Incorrect, true);
+                return;
+            }
+
+            // check status
+            if (g_Config.RejectDB.ContainsKey(AccInfo.status))
+            {
+                client.Send(Packet.SayMessage(g_Config.RejectDB[AccInfo.status], client.PCID, 3, client.Ver));
+                RemoveClient(client, true, false);
+#if DEBUG
+                PrintLogs(string.Format("StatusReject: RemoveClient({0})", client.PCID));
+#endif
+                return;
+            }
+
+#if DEBUG
+            PrintLogs(string.Format("{0} ExpireDate: {1}", AccInfo.id, AccInfo.expDate));
+#endif
+
+            // check expire
+            if (g_Config.isExpiration && DateTime.Now >= AccInfo.expDate)
+            {
+                client.Send(Packet.SayMessage(g_Config.Msg_Expired, client.PCID, 3, client.Ver));
+                RemoveClient(client, true, false);
+                return;
+            }
+
+            // log-in succeed: check duplicate connections
+            if (!g_Config.LoggedInList.ContainsKey(str_id))
+            {
+                string msg = string.Empty;
+                // 아직 서버 선택전이므로 로그인 유저 정보의 Sid = -1로 설정함
+                g_Config.LoggedInList.Add(str_id, new LoginUser(client.PCID, -1));
+                if (g_Config.isExpiration)
+                {
+                    TimeSpan ts = AccInfo.expDate - DateTime.Now;
+                    msg = string.Format(g_Config.Msg_ExpireInfo, ts.Days, ts.Hours, ts.Minutes);
+                }
+
+                PrintLogs(string.Format("Sending server list as v562: Servers={0}, ZoneAgents={1}", g_Config.ServerList.Count, g_Config.ZoneAgentList.Count));
+
+                client.Send(Packet.CreateSvrList(client.PCID, ClientVer.v562, g_Config.ZoneAgentList, g_Config.ServerList, msg));
+                PrintLogs(string.Format("SuccLogin: {0}:{1} {2}", client.IPadress, client.Port, str_id));
+#if DEBUG
+                PrintLogs(string.Format("RegLoginUser: {0}", str_id));
+#endif
+                return;
+            }
+
+            // duplication: handle existing logged-in user
+            PrintLogs(string.Format("Duplicate login detected {0} {1}", g_Config.LoggedInList[str_id].PCID, str_id));
+            if (g_Config.LoggedInList[str_id].PCID > g_Config.za_Uid.MinValue)
+            {
+                zaSession zAgent = g_Config.ZoneAgentList[g_Config.LoggedInList[str_id].ServerID];
+                zAgent.Send(Packet.reqDisconnectAcc(g_Config.LoggedInList[str_id].PCID, str_id));
+                PrintLogs(string.Format("Request UserDrop {0} {1} to ZoneAgent", g_Config.LoggedInList[str_id].PCID, str_id));
+            }
+            g_Config.LoggedInList.Remove(str_id);
+            PrintLogs(string.Format("Previous LoggedInUser.destroy {0}", str_id));
+
+            client.Send(Packet.SayMessage(g_Config.Msg_Duplication, client.PCID, 2, client.Ver));
+            RemoveClient(client, true, false);
         }
 
         /// <summary>
